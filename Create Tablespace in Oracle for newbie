@@ -1,0 +1,48 @@
+select * from v$tablespace where name not in ('SYSTEM','UND01','TSW01','TLS01','DFT01')
+
+
+select 'CREATE TABLESPACE ' || f1.tablespace_name ||' DATAFILE ' || '''' || f1.file_name || '''' || ' SIZE ' || f1.bytes 
+||' EXTENT MANAGEMENT '||t1.EXTENT_MANAGEMENT||' UNIFORM SIZE '||t1.INITIAL_EXTENT||' '||decode (t1.status, 'INVALID', 'OFFLINE', t1.status) ||';'
+from dba_tablespaces t1, dba_data_files f1
+where f1.tablespace_name = t1.tablespace_name
+and f1.tablespace_name not in  ('SYSTEM','UND01','TSW01','TLS01','DFT01')
+and f1.file_id = (select min(f2.file_id)
+                    from dba_data_files f2
+                   where f2.tablespace_name = f1.tablespace_name)
+order by f1.file_id
+/
+
+set echo off heading off termout off feed off pages 0 numwidth 10 linesize 80
+
+spool /tmp/create_ts.sql
+
+-- 1st: For each tablespace, select the first datafile that was created and create this again as first file for this (each) tablespace
+select 'CREATE TABLESPACE ' || f1.tablespace_name ||' DATAFILE ' || '''' || f1.file_name || '''' || ' SIZE ' || f1.bytes || 
+' DEFAULT STORAGE (INITIAL ' || t1.initial_extent ||' NEXT ' || t1.next_extent ||' PCTINCREASE ' || t1.pct_increase ||' MINEXTENTS ' || t1.min_extents ||
+' MAXEXTENTS ' || t1.max_extents ||') ' || ' ' ||decode (t1.status, 'INVALID', 'OFFLINE', t1.status) ||       ';'
+from dba_tablespaces t1, dba_data_files f1
+where f1.tablespace_name = t1.tablespace_name
+and f1.tablespace_name not in  ('SYSTEM','UND01','TSW01','TLS01','DFT01')
+and f1.file_id = (select min(f2.file_id)
+                    from dba_data_files f2
+                   where f2.tablespace_name = f1.tablespace_name)
+order by f1.file_id
+/
+
+spool off;
+
+spool /tmp/create_additional_ts.sql
+-- 2nd: For each tablespace, create additional datafiles if any there.
+
+select 'ALTER TABLESPACE ' || f1.tablespace_name ||' ADD DATAFILE ' || '''' || f1.file_name || '''' || ' SIZE ' || f1.bytes || ';'
+from dba_data_files f1
+where f1.tablespace_name not in  ('SYSTEM','UND01','TSW01','TLS01','DFT01')
+and f1.file_id > (select min(f2.file_id)
+                    from dba_data_files f2
+where f2.tablespace_name = f1.tablespace_name)
+order by f1.file_id
+/
+
+spool off;
+
+
