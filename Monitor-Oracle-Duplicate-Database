@@ -1,0 +1,403 @@
+#!/bin/ksh
+#set -x
+#
+#       dupdbnotify.ksh
+#
+#       Script used to Monitor The Status Of Duplicate Database Job and notify Owner for any success/warning/errors.
+#
+#       Usage: $0 -s <Oracle Sid> 
+#
+#       Dependancies :-
+#         orasid utility
+#
+#       Author                  
+#       Satishbabu Gunukula     
+#
+###################################################################################################
+
+umask 117
+
+if [ -f /oracle/utils/backadmin/scripts/path.ksh ]; then
+. /oracle/utils/backadmin/scripts/path.ksh
+fi
+
+#----------------------------------------------------------------------------
+
+usage()
+{
+   print "Usage: $0 -s <Oracle Sid>"
+   exit ${V_EXIT1};
+}
+
+#----------------------------------------------------------------------------
+
+chk_user_id()
+{
+   V_USERID=`whoami`
+
+   if [ ${V_USERID} = "oracle" ]; then
+      return;
+   else
+      print "Userid must be set to ORACLE to execute"
+      exit ${V_EXIT1};
+   fi
+}
+
+#----------------------------------------------------------------------------
+
+chk_set_vars()
+{
+   if [ -z "${SID}" ]; then
+      usage;
+   fi
+ 
+ return;
+}
+
+#----------------------------------------------------------------------------
+
+set_env_vars()
+{
+   JOB=`basename ${PROG} | sed -e 's/\.ksh//'`; export JOB
+
+   V_TIMESTAMP=`date +%m%d%y%a_%H:%M`
+   V_DATE=`date +%m%d%y`
+
+   V_DBAOPER_HOME=/home/dbaoper
+   V_DBAOPER_LOGS=${V_DBAOPER_HOME}/logs
+   V_DBAOPER_SCRIPTS=/oracle/utils/backadmin/scripts
+   V_SID_LOG_DIR=${V_DBAOPER_LOGS}/${SID}/bkup
+
+   V_ORA_UTL_DIR=/oracle/utils
+   V_ORA_SID_UTL=${V_ORA_UTL_DIR}/orasid
+
+   V_TEMP_SPOOL_FILE1=${V_SID_LOG_DIR}/${JOB}_SPOOL1.log
+   V_TEMP_SPOOL_FILE2=${V_SID_LOG_DIR}/${JOB}_SPOOL2.log
+
+   KSH_LOG_FILE=${V_SID_LOG_DIR}/${JOB}_${V_TIMESTAMP}.log; export KSH_LOG_FILE
+
+   if [ -f ${KSH_LOG_FILE} ]; then
+      mv ${KSH_LOG_FILE} ${KSH_LOG_FILE}O > /dev/null
+   fi
+
+   return;
+}
+#----------------------------------------------------------------------------
+
+set_ora_env()
+{
+   ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Setting oracle environment"
+
+   ORACLE_SID=${SID}; export ${ORACLE_SID}
+
+   ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Executing ${V_ORA_SID_UTL} ${SID}"
+   echo " " >> ${KSH_LOG_FILE}
+
+   . ${V_ORA_SID_UTL} ${SID} >> ${KSH_LOG_FILE} 2>&1
+
+   echo " " >> ${KSH_LOG_FILE}
+
+   if [ -z ${ORACLE_SID} -o -z ${ORACLE_HOME} ]; then
+      ${V_DBAOPER_SCRIPTS}/notify.ksh -ml "**ERROR** : Environment variables ORACLE_SID and ORACLE_HOME were not set"
+      exit ${V_EXIT2};
+   fi
+
+   NLS_DATE_FORMAT='DD-MON-RR HH24:MI:SS'; export NLS_DATE_FORMAT
+   EPC_DISABLED=TRUE; export EPC_DISABLED
+
+   return;
+}
+
+#----------------------------------------------------------------------------
+try_connect()
+{
+   sqlplus -s /nolog <<EOC > ${V_TEMP_SPOOL_FILE1}
+   connect / as sysdba;
+   select instance_name, host_name, logins, status from v\$instance;
+   exit;
+EOC
+}
+#----------------------------------------------------------------------------
+get_dbcrdate()
+{
+   sqlplus -s /nolog <<EOC > ${V_TEMP_SPOOL_FILE2}
+   connect / as sysdba;
+   select name||'#'||to_char(created,'DD-MON-YYYY HH24:MI:SS')||'#'||to_char(created,'MMDDYY') from  v\$database;
+   exit;
+EOC
+}
+
+#----------------------------------------------------------------------------
+
+verify_connect()
+{
+   echo " " >> ${KSH_LOG_FILE}
+   ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Trying to connect to the database"
+   try_connect &
+   echo " " >> ${KSH_LOG_FILE}
+
+   V_TRYCONNECTPID=$!
+   V_WAITCOUNT=0
+   V_DBSTATUS="ONTIME"
+   
+   # Kill the try_connect process if it runs for more than 2 minutes
+
+while true
+do
+  sleep 1
+     V_WAITCOUNT=`expr $V_WAITCOUNT + 1`
+     V_PRCNT=`ps -p ${V_TRYCONNECTPID} | wc -l`
+        if [ ${V_PRCNT} -gt 1 ]; then
+             if [ ${V_WAITCOUNT} -gt 120 ]; then
+                  kill ${V_TRYCONNECTPID}
+                  V_DBSTATUS="TIMEOUT"
+                  break
+             fi
+        else
+              break
+        fi
+done
+
+   if [ ${V_DBSTATUS} = "TIMEOUT" ]; then
+       echo " " >> ${KSH_LOG_FILE}
+       ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Unable to connect to the Owner database in 2 mintues"
+       echo " " >> ${KSH_LOG_FILE}
+       V_DBDOWN="YES"
+   elif [ -f ${V_TEMP_SPOOL_FILE1} ]; then
+         if [ `grep -c ${ORACLE_SID} ${V_TEMP_SPOOL_FILE1}` -eq 0 ]; then
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Unable to found ${ORACLE_SID} in connection spool file"
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              V_DBDOWN="YES"
+         elif [ `grep -c "STARTED" ${V_TEMP_SPOOL_FILE1}` -eq 1 ]; then
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Database ${ORACLE_SID} is in nomount state"
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              V_DBDOWN="YES"
+         elif [ `grep -c "MOUNTED" ${V_TEMP_SPOOL_FILE1}` -eq 1 ]; then
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Database ${ORACLE_SID} is in mount state"
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              V_DBDOWN="YES"
+         elif [ `grep -c "RESTRICTED" ${V_TEMP_SPOOL_FILE1}` -eq 1 ]; then
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Database ${ORACLE_SID} is in Restricted Mode"
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              V_DBDOWN="YES"
+         elif [ `grep -c "ORACLE not available" ${V_TEMP_SPOOL_FILE1}` -eq 1 ]; then
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Unable to connect to Database ${ORACLE_SID} - Refer Alert log file "
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              V_DBDOWN="YES"
+         elif [ `grep -c "not logged on" ${V_TEMP_SPOOL_FILE1}` -eq 1 ]; then
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Unable to connect to Database ${ORACLE_SID} - Refer Alert log file "
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              V_DBDOWN="YES"
+         elif [ `grep -c "ERROR" ${V_TEMP_SPOOL_FILE1}` -ge 1 ]; then
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Unable to connect to Database ${ORACLE_SID} - Unknown Error "
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              V_DBDOWN="YES"
+         else
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Able to connect to Database ${ORACLE_SID} - No Issues"
+              cat ${V_TEMP_SPOOL_FILE1} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+              ${V_DBAOPER_SCRIPTS}/notify.ksh -l " Get Database ${ORACLE_SID} Creation Date "
+
+              get_dbcrdate;
+
+              V_DBCRDTTIME=`cat ${V_TEMP_SPOOL_FILE2} | grep -i ${ORACLE_SID} | awk -F"#" '{print $2}'`
+              V_DBCRDT=`cat ${V_TEMP_SPOOL_FILE2} | grep -i ${ORACLE_SID} | awk -F"#" '{print $3}'`
+              
+              if [ ${V_DBCRDT} = ${V_DATE} ]; then
+              	 V_DBDOWN="NO"
+              else
+                 V_DBDOWN="NOOLD"
+              fi
+              
+              cat ${V_TEMP_SPOOL_FILE2} >> ${KSH_LOG_FILE}
+              echo " " >> ${KSH_LOG_FILE}
+         fi
+   fi
+
+  if [ -f ${V_TEMP_SPOOL_FILE1} ]; then
+     rm -f ${V_TEMP_SPOOL_FILE1} > /dev/null
+  fi
+  if [ -f ${V_TEMP_SPOOL_FILE2} ]; then
+     rm -f ${V_TEMP_SPOOL_FILE2} > /dev/null
+  fi
+   
+   return;
+ }
+
+
+#----------------------------------------------------------------------------
+
+send_greenalert() 
+{
+
+(echo "From: DBMonitor@oracleracexpert.com"
+echo "To: satishbabugunukula@oracleracexpert.com"
+echo "Cc: DBDupTicket@oracleracexpert.com"
+echo "Subject: ${SID} Database Duplication Successful"
+echo "Hi,
+
+You are receiving this email because you are one of the Owner for ${SID} database.
+${SID} database  has been duplicated successfully as on ${V_DBCRDTTIME}
+
+This is an automated message so please do not reply.
+
+Thanks,
+DBA Monitoring Team
+"
+) | /usr/lib/sendmail -t
+
+}
+
+#----------------------------------------------------------------------------
+
+send_yellowalert()
+{
+
+(echo "From: DBMonitor@oracleracexpert.com"
+echo "To: satishbabugunukula@oracleracexpert.com"
+echo "Cc: DBDupTicket@oracleracexpert.com"
+echo "Subject: Warning: ${SID} Database Duplication Failure - Old Version Available"
+echo "Hi,
+
+You are receiving this email because you are one of the Owner for ${SID} database.
+Some error occurred while duplicating ${SID} database, As a result an older version is available.
+
+The database was last created on ${V_DBCRDTTIME}.
+
+This is an automated message so please do not reply.
+
+Thanks,
+DBA Monitoring Team
+DBMonitor@oracleracexpert.com
+"
+) | /usr/lib/sendmail -t
+
+}
+
+#----------------------------------------------------------------------------
+
+send_redalert()
+{
+
+(echo "From: DBMonitor@oracleracexpert.com"
+echo "To: dbcbst@oracleracexpert.com"
+echo "Cc: DBDupTicket@oracleracexpert.com"
+echo "Subject: Error: ${SID} Database Duplication Failure - Database Not Available"
+echo "Hi,
+
+You are receiving this email because you are one of the Owner for ${SID} database.
+Some error occured while duplicating ${SID} database, As a result ${SID} database is not available.
+
+This is an automated message so please do not reply.
+
+Thanks,
+DBA Monitoring Team
+DBMonitor@oracleracexpert.com"
+) | /usr/lib/sendmail -t
+
+}
+
+#----------------------------------------------------------------------------
+
+check_dbcrdate()
+{
+   if [ ${V_DBDOWN} = "NO" ]; then
+   
+      send_greenalert;   
+      ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Green Alert Mail Sent"
+
+   elif  [ ${V_DBDOWN} = "NOOLD" ]; then  
+   
+      send_yellowalert;
+      ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Yellow Alert Mail Sent"
+
+   else
+   
+      send_redalert;  
+      ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Red Alert Mail Sent"
+      
+   fi
+   return;
+   
+}
+
+#---------------------------------------------------------------------------
+remove_log()
+{
+   ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Starting to remove old log files "
+    echo " " >> ${KSH_LOG_FILE}
+
+
+   if [ -f ${V_TEMP_SPOOL_FILE1} ]; then
+      rm -f ${V_TEMP_SPOOL_FILE1}
+   fi
+
+   if [ -f ${V_TEMP_SPOOL_FILE2} ]; then
+      rm -f ${V_TEMP_SPOOL_FILE2}
+   fi
+
+   ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Removing old files older than 14 days"
+
+   echo " " >> ${KSH_LOG_FILE}
+   find ${V_SID_LOG_DIR} -follow -mtime +14 -print >> ${KSH_LOG_FILE}
+   echo " " >> ${KSH_LOG_FILE}
+
+   if [ -n ${V_SID_LOG_DIR} ]; then
+   find ${V_SID_LOG_DIR} -follow -mtime +14 -print | xargs rm -f > /dev/null
+   fi
+
+   ${V_DBAOPER_SCRIPTS}/notify.ksh -l "Log files Removed"
+
+}
+
+#----------------------------------------------------------------------------
+
+HOST=`hostname | awk -F. '{print $1}'`; export HOST
+PROG=`basename $0`; export PROG
+ASOID="rman"; export ASOID
+
+V_EXIT0=0
+V_EXIT1=1
+V_EXIT2=2
+V_EXIT3=3
+
+if [ $# -eq 0 ];
+then
+   usage;
+fi
+
+while getopts :s: OPTM "$@"
+do
+   case "${OPTM}" in
+        s) SID=${OPTARG}
+           export SID;;
+        *) /oracle/utils/backadmin/scripts/notify.ksh -p "**ERROR** : Invalid option -${OPTM}"
+          usage;;
+   esac
+done
+
+chk_user_id;
+chk_set_vars;
+set_env_vars;
+set_ora_env;
+verify_connect;
+check_dbcrdate;
+remove_log;
+
+${V_DBAOPER_SCRIPTS}/notify.ksh -l "Completed $0 $*"
+
