@@ -1,0 +1,94 @@
+################################################################################################
+#!/bin/ksh
+#
+#       monitor_oracledblist.ksh
+#
+#       Script used to Monitor Oracle Databases and Listeners and send alerts when it goes down.
+#
+#       Add or replace email in send_mail function 
+#       Schedule the script in crontab
+#
+#       Author                      
+#       Satishbabu Gunukula         
+#
+################################################################################################
+#----------------------------------------------
+# Variable Initialization
+#----------------------------------------------
+init_variable()
+{
+HOSTNAME=`hostname |awk -F"." '{print $1}'`; export HOSTNAME
+V_DATE=`date +%m%d%y_%H%M`
+}
+#----------------------------------------------
+# DB Status Check(Up/Down)
+#----------------------------------------------
+db_check()
+{
+LOG_FLAG="Alert.log"
+ORATAB=/etc/oratab; export ORATAB
+ORACLE_SIDS=`cat ${ORATAB} | grep -v '#'| grep -v '*'| grep -v '+'` ; export ORACLE_SIDS
+for ORACLE_SID in $(echo $ORACLE_SIDS)
+do
+   if [ "`echo $ORACLE_SID | awk -F: '{print $NF}' -`" = "Y" ] ; then
+      SID=`echo $ORACLE_SID | awk -F: '{print $1}'`; export SID
+      DB_PROCESS=`ps -ef | grep -v 'grep' | grep -w ora_pmon_$SID | wc -l`
+      LISTENER_PROCESS=`ps -ef | grep -v 'grep' | grep -w LISTENER_$SID | wc -l`
+      if [ ${DB_PROCESS} -eq 0 ]; then
+          STATUS_FLAG="${SID} Database is DOWN on ${HOSTNAME} Server"
+          send_mail;
+      elif [ ${LISTENER_PROCESS} -eq 0 ]; then
+          STATUS_FLAG="LISTENER_$SID is DOWN on ${HOSTNAME} Server"
+          send_mail;
+      else
+          DB_PROCESS=0
+          LISTENER_PROCESS=0
+      fi
+   fi
+done
+}
+#----------------------------------------------
+# Check userid
+#----------------------------------------------
+chk_user_id()
+{
+OS=`uname -s`
+if [ "${OS}" = "Linux" ]; then
+    USERID=`/usr/bin/whoami`
+    if [ ${USERID} = "oracle" ]; then
+        return;
+    else
+        echo "**WARNING**:Userid must be set to ORACLE to execute"
+        echo " " >> ${V_LOGFILE}
+        exit;
+    fi
+fi
+}
+#-------------------------------------------------
+# Send Mail
+#-------------------------------------------------
+send_mail()
+{
+(echo "From: OraDBMonitor@oracleracexpert.com"
+echo "To: satishbabugunukula@oracleracexpert.com"
+echo "Subject: **Alert**: ${STATUS_FLAG}....!"
+echo "Hi,
+
+You are receiving this email because "${STATUS_FLAG}"
+Please check the "${LOG_FLAG}", "Trace files" for ERRORS and take immediate action to fix the issue.
+
+This is an automated message so please do not reply.
+
+Thanks,
+OracleDBMonitor
+"
+) | /usr/lib/sendmail -t
+}
+#-------------------------------------------------
+# Main Program
+#-------------------------------------------------
+init_variable;
+chk_user_id;
+db_check;
+#
+# End of Script
