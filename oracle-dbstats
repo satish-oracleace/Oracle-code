@@ -1,0 +1,24 @@
+#!/bin/ksh
+#set -x
+#
+#       DBStats.ksh
+#
+#       Script used to update Stats for Database loading significant amount of data frequently or daily. 
+#       Replace MY_ORACLE_DB with your Database name 
+#       update ORACLE_HOME with your Database home.
+#       Replace MY_ORACLE_DB_USR with your Database user you need to generate stats
+#       Duplicate dbms_stats line to generate stats for more users
+#       Schedule the job in crontab.
+#
+#
+###################################################################################################
+umask 117
+#!/bin/ksh
+export ORACLE_SID=MY_ORACLE_DB
+export ORACLE_HOME=/u01/home/oracle/product/12.2.0.1/dbhome_1
+$ORACLE_HOME/bin/sqlplus / as sysdba  << EOF
+spool /tmp/stats_MY_ORACLE_DB.txt
+execute dbms_stats.gather_schema_stats('MY_ORACLE_DB_USR', DBMS_STATS.AUTO_SAMPLE_SIZE, CASCADE =>TRUE);
+spool off
+EXIT;
+EOF
