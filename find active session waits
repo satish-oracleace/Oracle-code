@@ -1,0 +1,35 @@
+------------------------------------
+--Script : Active Session waits
+--Author : oracleracexpert.com
+------------------------------------
+SET PAGESIZE 1000
+SET LINESIZE 600
+
+COLUMN username FORMAT A10
+COLUMN osuser FORMAT A10
+COLUMN sid FORMAT 9999
+COLUMN serial# FORMAT 999999999
+COLUMN spid FORMAT A10
+COLUMN state FORMAT A10
+COLUMN wait_class FORMAT A20
+COLUMN seconds_in_wait FORMAT 999999999
+COLUMN module FORMAT A35
+COLUMN blocking_session FORMAT A20
+COLUMN blocking_session_status FORMAT A20
+
+SELECT s.username,
+       s.osuser,
+       s.sid,
+       s.serial#,
+	     p.spid, 
+       s.state,
+	   s.wait_class,
+       s.seconds_in_wait,
+       s.module,
+       TO_CHAR(s.logon_Time,'MM-DD-YYYY HH24:MI:SS') AS logon_time,
+	   s.blocking_session,
+       s.blocking_session_status AS BlockStatus
+FROM   v$session s, v$process p
+WHERE  s.paddr  = p.addr
+AND    s.status = 'ACTIVE'
+ORDER BY 1,2;
